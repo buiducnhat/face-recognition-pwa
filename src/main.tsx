@@ -1,0 +1,17 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+
+import App from './App.tsx';
+import store, { StoreContext } from './app/stores';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <StoreContext.Provider value={store}>
+        <App />
+      </StoreContext.Provider>
+    </BrowserRouter>
+  </React.StrictMode>,
+);
