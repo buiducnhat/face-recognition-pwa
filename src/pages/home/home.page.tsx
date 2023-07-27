@@ -1,9 +1,15 @@
 import { observer } from 'mobx-react-lite';
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import * as faceapi from '@vladmandic/face-api';
 import { DEPLOYED_URL } from 'src/app/constants';
-import { Button, Input } from 'react-daisyui';
-import { useLocalStorageState } from 'ahooks';
+import { Button, Input, Select } from 'react-daisyui';
+import {
+  useAsyncEffect,
+  useLocalStorageState,
+  useRafInterval,
+  // useRafTimeout,
+  useUpdateEffect,
+} from 'ahooks';
 import * as R from 'ramda';
 import { ReactComponent as LoadingSvg } from 'src/assets/images/loading.svg';
 
@@ -30,7 +36,9 @@ const HomePage = observer(() => {
   const [savedFaces, setSavedFaces] = useLocalStorageState<TSavedFace[]>('savedFaces', {
     defaultValue: [],
   });
+  const [listVideoDevices, setListVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [modelsLoaded, setModelsLoaded] = React.useState(false);
+  const [videoLoaded, setVideoLoaded] = React.useState(false);
   const [nameInput, setNameInput] = React.useState('');
   const [detection, setDetection] = React.useState<TFaceDetection>();
   const [playing, setPlaying] = React.useState(true);
@@ -101,7 +109,9 @@ const HomePage = observer(() => {
 
         ctx.fillStyle = '#ecf0f1';
         ctx.fillText(
-          `${recogFaces[index]?.name || 'Unknown'} - ${recogFaces[index]?.distance.toFixed(2)}`,
+          `${recogFaces[index]?.name || 'Unknown'} - ${
+            recogFaces[index]?.distance?.toFixed(2) || 1
+          }`,
           person.detection.box.x + 10,
           person.detection.box.y + 25,
         );
@@ -125,43 +135,36 @@ const HomePage = observer(() => {
     [],
   );
 
-  const detectVideo = useCallback(
-    async (savedFaces: TSavedFace[]) => {
-      try {
-        if (!videoRef.current) return false;
+  const detectVideo = useCallback(async () => {
+    try {
+      if (!videoRef.current) return false;
 
-        const t0 = performance.now();
-        const detections = await faceapi
-          .detectAllFaces(
-            videoRef.current,
-            new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 5 }),
-          )
-          .withFaceLandmarks()
-          .withFaceDescriptors();
-        setDetection(detections[0]);
+      const t0 = performance.now();
+      const detections = await faceapi
+        .detectAllFaces(
+          videoRef.current,
+          new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 5 }),
+        )
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+      setDetection(detections[0]);
 
-        if (savedFaces?.length) {
-          const recogFaces = detections.map(detection => recognizeFace(detection, savedFaces));
-          drawFaces(detections, 0, recogFaces);
-          requestAnimationFrame(() => detectVideo(savedFaces));
+      const fps = 1000 / (performance.now() - t0);
+      drawFaces(detections, fps);
+      const recogFaces = detections.map(detection => recognizeFace(detection, savedFaces || []));
+      drawFaces(detections, fps, recogFaces);
 
-          return true;
-        }
+      return true;
+    } catch (error) {
+      console.log(error);
 
-        const fps = 1000 / (performance.now() - t0);
-        drawFaces(detections, fps);
+      return false;
+    }
+  }, [drawFaces, recognizeFace, savedFaces]);
 
-        requestAnimationFrame(() => detectVideo(savedFaces));
-
-        return true;
-      } catch (error) {
-        console.log(error);
-
-        return false;
-      }
-    },
-    [drawFaces, recognizeFace],
-  );
+  useRafInterval(() => {
+    detectVideo();
+  }, 100);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -178,24 +181,7 @@ const HomePage = observer(() => {
     loadModels();
   }, []);
 
-  useEffect(() => {
-    navigator.mediaDevices
-      .getUserMedia({ audio: false, video: { facingMode: 'user' } })
-      .then(stream => {
-        if (!videoRef.current) {
-          return;
-        }
-
-        const video = videoRef.current;
-
-        video.srcObject = stream;
-      })
-      .catch(err => {
-        console.error('error:', err);
-      });
-  }, []);
-
-  useEffect(() => {
+  useUpdateEffect(() => {
     if (!playing) {
       videoRef.current?.pause();
     } else {
@@ -203,43 +189,99 @@ const HomePage = observer(() => {
     }
   }, [playing]);
 
+  useAsyncEffect(async () => {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+
+    setListVideoDevices(devices.filter(device => device.kind === 'videoinput'));
+  }, []);
+
   return (
     <div className="container max-w-md mx-auto p-2">
-      {modelsLoaded ? (
-        <div className="relative flex justify-center rounded-box overflow-hidden">
-          <video
-            className=""
-            ref={videoRef}
-            autoPlay
-            playsInline
-            onLoadedMetadata={e => {
-              if (!canvasRef.current) {
-                return;
-              }
-              canvasRef.current.width = e.currentTarget.videoWidth;
-              canvasRef.current.height = e.currentTarget.videoHeight;
-              // detectVideo(savedFaces || []);
-            }}
-          />
-          <canvas className="absolute top-0 left-0 w-full" ref={canvasRef} />
-        </div>
-      ) : (
-        <div className="w-full rounded-box h-64 flex justify-center items-center bg-base-200">
-          <LoadingSvg />
-        </div>
-      )}
+      <div className="relative min-h-[16rem] flex justify-center rounded-box overflow-hidden">
+        <video
+          className=""
+          ref={videoRef}
+          autoPlay
+          playsInline
+          onLoadedMetadata={e => {
+            if (!canvasRef.current) {
+              return;
+            }
+            canvasRef.current.width = e.currentTarget.videoWidth;
+            canvasRef.current.height = e.currentTarget.videoHeight;
+          }}
+        />
+        <canvas className="absolute top-0 left-0 w-full" ref={canvasRef} />
+
+        {(!modelsLoaded || !videoLoaded) && (
+          <div className="absolute top-0 left-0 w-full h-full rounded-box flex justify-center items-center bg-base-200">
+            <LoadingSvg />
+          </div>
+        )}
+      </div>
+
+      <div className="my-2"></div>
+
+      <div className="flex w-full">
+        <Select
+          className="w-full"
+          onChange={async e => {
+            setVideoLoaded(false);
+
+            const deviceId = e.target.value;
+            const device = listVideoDevices.find(device => device.deviceId === deviceId);
+
+            if (!device) {
+              return;
+            }
+
+            navigator.mediaDevices
+              .getUserMedia({
+                audio: false,
+                video: { deviceId: device?.deviceId },
+              })
+              .then(stream => {
+                if (!videoRef.current) {
+                  // alert('Failed to get video');
+                  console.log('Failed to get video');
+                  return;
+                }
+
+                const video = videoRef.current;
+                video.srcObject = stream;
+
+                setVideoLoaded(true);
+              })
+              .catch(err => {
+                console.error('error:', err);
+              });
+          }}
+        >
+          {[
+            <Select.Option key="default" value={'default'}>
+              Default Camera
+            </Select.Option>,
+            ...listVideoDevices.map(device => (
+              <Select.Option key={device.deviceId} value={device.deviceId}>
+                {device.label}
+              </Select.Option>
+            )),
+          ]}
+        </Select>
+      </div>
 
       <div className="my-2"></div>
 
       <div className="flex w-full space-x-2">
         <Input
-          className="flex-1"
+          className="flex-grow-[2]"
           placeholder="Enter your name"
           value={nameInput}
           onChange={e => setNameInput(e.target.value)}
         />
 
         <Button
+          className="flex-grow-[1]"
           color="primary"
           variant="outline"
           onClick={() => {
@@ -255,7 +297,6 @@ const HomePage = observer(() => {
             ]);
 
             setNameInput('');
-            alert('Saved');
           }}
         >
           Save face
@@ -266,6 +307,7 @@ const HomePage = observer(() => {
 
       <div className="flex space-x-2">
         <Button
+          className="flex-1"
           color="error"
           variant="outline"
           disabled={!savedFaces?.length}
@@ -277,9 +319,12 @@ const HomePage = observer(() => {
           Delete all
         </Button>
 
-        <Button onClick={() => setPlaying(!playing)}>{playing ? 'Pause' : 'Play'}</Button>
+        <Button className="flex-1" onClick={() => setPlaying(!playing)}>
+          {playing ? 'Pause' : 'Play'}
+        </Button>
 
         <Button
+          className="flex-1"
           color="primary"
           disabled={!detection || !savedFaces?.length}
           onClick={() => {
